@@ -52,6 +52,22 @@ def log_all_snapshots(db: Session, portfolio_values: dict[str, dict]):
             continue
         log_snapshot(db, slug, pf["daily_pct"], pf["total_value"], snapshot_at=ts)
 
+def get_purchase_dates(db: Session, slug: str, start: datetime) -> set[date]:
+    """Returns set of dates where a buy transaction occurred for this slug."""
+    from models import Transaction, Account
+    account = db.query(Account).filter_by(slug=slug).first()
+    if not account:
+        return set()
+    txns = (
+        db.query(Transaction)
+        .filter(Transaction.account_id == account.id)
+        .filter(Transaction.date >= start.date())
+        .filter(Transaction.type == "buy")
+        .all()
+    )
+    return {t.date for t in txns}
+
+
 def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float, float]]]:
     ct  = pytz.timezone("America/Chicago")
     now = datetime.now(ct)
@@ -79,16 +95,33 @@ def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float
             series[row.slug] = []
         series[row.slug].append((row.snapshot_at, row.pct_gain, row.dollar_value))
 
-    # Monthly/YTD: downsample to last snapshot per trading day
+    # Monthly/YTD: downsample + neutralize purchase days
     if mode in ("monthly", "ytd"):
         for slug in series:
             by_day: dict[date, tuple] = {}
             for ts, pct, dv in series[slug]:
                 by_day[ts.date()] = (ts, pct, dv)
             sorted_days = [by_day[d] for d in sorted(by_day)]
-            series[slug] = sorted_days  # one point per day, end-of-day pct_gain
 
-    # Daily: fetch yesterday's closing value per slug as baseline
+            # Get exact purchase dates from transactions
+            purchase_dates = get_purchase_dates(db, slug, cutoff_utc)
+
+            cleaned = []
+            for i, (ts, pct, dv) in enumerate(sorted_days):
+                if i == 0:
+                    cleaned.append((ts, pct, dv))
+                    continue
+                prev_ts, prev_pct, prev_dv = cleaned[-1]
+                if ts.date() in purchase_dates:
+                    # Purchase day — replace dollar_value with price-only implied value
+                    implied_dv = prev_dv * (1 + pct / 100)
+                    cleaned.append((ts, pct, round(implied_dv, 2)))
+                else:
+                    cleaned.append((ts, pct, dv))
+
+            series[slug] = cleaned
+
+    # Daily: prepend yesterday's close as anchor
     if mode == "daily":
         for slug in list(series.keys()):
             prev = (
@@ -99,9 +132,7 @@ def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float
                 .first()
             )
             if prev:
-                # Prepend yesterday's close as anchor at 0%
-                # Use pct_gain=0 so today's moves are relative to open
-                series[slug].insert(0, (cutoff_utc, 0.0, prev.dollar_value if prev else series[slug][0][2]))
+                series[slug].insert(0, (cutoff_utc, 0.0, prev.dollar_value))
 
     return series
 
