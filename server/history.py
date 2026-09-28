@@ -85,8 +85,18 @@ def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float
             by_day: dict[date, tuple] = {}
             for ts, pct, dv in series[slug]:
                 by_day[ts.date()] = (ts, pct, dv)
-            series[slug] = [by_day[d] for d in sorted(by_day)]
+            sorted_days = [by_day[d] for d in sorted(by_day)]
 
+            # Build cumulative % chain from daily pct_gains
+            # (1 + r1) * (1 + r2) * ... - 1
+            cumulative = []
+            factor = 1.0
+            for ts, pct, dv in sorted_days:
+                factor *= (1 + pct / 100)
+                cumulative_pct = (factor - 1) * 100
+                cumulative.append((ts, cumulative_pct, dv))
+
+            series[slug] = cumulative
     # Daily: fetch yesterday's closing value per slug as baseline
     if mode == "daily":
         for slug in list(series.keys()):
