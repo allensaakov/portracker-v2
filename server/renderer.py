@@ -384,11 +384,9 @@ def render_display(portfolios: dict, indices: list, history: dict,
         if mode == "daily":
             base = pts[0][1]   # pct_gain of anchor point = 0.0
             normalized = [(ts, pct - base) for ts, pct, _ in pts]
-        else:
-            base_dv = pts[0][2] # dollar_value at window start
-            if not base_dv:
-                continue
-            normalized = [(ts, (dv / base_dv) * 100) for ts, _, dv in pts]
+        else:  # monthly/ytd
+            base = pts[0][1]  # cumulative pct at window start = ~0
+            normalized = [(ts, 100 + (pct - base)) for ts, pct, _ in pts]
         series_data.append((slug, normalized))
 
     if series_data:
