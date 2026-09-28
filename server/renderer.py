@@ -385,11 +385,10 @@ def render_display(portfolios: dict, indices: list, history: dict,
             base = pts[0][1]   # pct_gain of anchor point = 0.0
             normalized = [(ts, pct - base) for ts, pct, _ in pts]
         else:  # monthly/ytd
-            factor = 100.0
-            normalized = []
-            for ts, pct, dv in pts:
-                factor *= (1 + pct / 100)
-                normalized.append((ts, factor))
+            base_dv = pts[0][2]
+            if not base_dv:
+                continue
+            normalized = [(ts, (dv / base_dv) * 100) for ts, pct, dv in pts]
             series_data.append((slug, normalized))
 
     if series_data:
