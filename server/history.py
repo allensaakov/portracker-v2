@@ -98,8 +98,9 @@ def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float
                 .first()
             )
             if prev:
-                # Prepend yesterday's close as t=0 anchor
-                series[slug].insert(0, (cutoff_utc, 0.0, prev.dollar_value))
+                # Prepend yesterday's close as anchor at 0%
+                # Use pct_gain=0 so today's moves are relative to open
+                series[slug].insert(0, (cutoff_utc, 0.0, prev.dollar_value if prev else series[slug][0][2]))
 
     return series
 
