@@ -87,16 +87,26 @@ def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float
                 by_day[ts.date()] = (ts, pct, dv)
             sorted_days = [by_day[d] for d in sorted(by_day)]
 
-            # Build cumulative % chain from daily pct_gains
-            # (1 + r1) * (1 + r2) * ... - 1
-            cumulative = []
-            factor = 1.0
-            for ts, pct, dv in sorted_days:
-                factor *= (1 + pct / 100)
-                cumulative_pct = (factor - 1) * 100
-                cumulative.append((ts, cumulative_pct, dv))
+            # Neutralize cash inflow days
+            # If dollar_value jumps more than 5% AND pct_gain is flat/small,
+            # it's a purchase — use previous day's value to keep chart flat
+            cleaned = []
+            for i, (ts, pct, dv) in enumerate(sorted_days):
+                if i == 0:
+                    cleaned.append((ts, pct, dv))
+                    continue
+                prev_dv = cleaned[-1][2]
+                raw_chg = (dv - prev_dv) / prev_dv * 100 if prev_dv else 0
+                # If raw dollar change >> pct_gain, it's a cash inflow
+                if abs(raw_chg) > abs(pct) + 2.0:
+                    # Neutralize: scale dollar_value to remove the inflow
+                    adjusted_dv = prev_dv * (1 + pct / 100)
+                    cleaned.append((ts, pct, round(adjusted_dv, 2)))
+                else:
+                    cleaned.append((ts, pct, dv))
 
-            series[slug] = cumulative
+            series[slug] = cleaned
+            
     # Daily: fetch yesterday's closing value per slug as baseline
     if mode == "daily":
         for slug in list(series.keys()):
