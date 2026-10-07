@@ -33,12 +33,20 @@ from db import get_db_dep, init_db
 from models import PlaidItem, Account
 from sync import sync_all, sync_item
 from prices import refresh_prices, get_portfolio_value, get_indices, get_upcoming_events, refresh_dividends
-from history import log_all_snapshots, load_history, import_from_csv
+from history import log_all_snapshots, load_history, import_from_csv, PortfolioHistory
 from renderer import render_display
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.combining import OrTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 app = FastAPI(title="Portracker v2")
 scheduler = BackgroundScheduler()
+tz = "America/Chicago"
+trigger = OrTrigger([
+    CronTrigger(day_of_week="mon-fri", hour=8,      minute="30-55/5", timezone=tz),
+    CronTrigger(day_of_week="mon-fri", hour="9-14", minute="*/5",     timezone=tz),
+    CronTrigger(day_of_week="mon-fri", hour=15,     minute=0,         timezone=tz),
+])
 
 def scheduled_price_refresh():
     from db import SessionLocal
@@ -78,17 +86,41 @@ def scheduled_plaid_sync():
     finally:
         db.close()
 
-# Price refresh every 5 min Mon-Fri 8:30am-3pm CT (14:30-21:00 UTC)
-scheduler.add_job(scheduled_price_refresh, "cron",
-                  day_of_week="mon-fri", hour="8-14", minute="*/5", timezone="America/Chicago")
+def scheduled_morning_sync():
+    for fn in (scheduled_dividend_refresh, scheduled_plaid_sync):
+        try:
+            fn()
+        except Exception:
+            return ("%s failed", fn.__name__)
 
-# Dividend refresh once daily at 7am CT (1pm UTC)
-scheduler.add_job(scheduled_dividend_refresh, "cron",
-                  day_of_week="mon-fri", hour=7, minute=0, timezone="America/Chicago")
+def scheduled_market_close():
+    from db import SessionLocal
+    from history import update_daily_twr
+    from datetime import date
+    db = SessionLocal()
+    try:
+        for slug in PORTFOLIOS:
+            update_daily_twr(db, slug, date.today())
+        db.commit()
+        print("[CRON] Market close TWR computed")
+    except Exception as e:
+        print(f"[CRON] Market close failed: {e}")
+    finally:
+        db.close()
 
-# Plaid sync 3x daily at market open, midday, 2pm CT (14, 18, 20 UTC)
-scheduler.add_job(scheduled_plaid_sync, "cron",
-                  day_of_week="mon-fri", hour="8,12,14", minute=0, timezone="America/Chicago")
+
+# Price refresh every 5 min Mon-Fri 8:30am-3pm CT (14:30-21:00 UTC). Defined above as OrTrigger with multiple CronTriggers.
+scheduler.add_job(scheduled_price_refresh, trigger, id="price_refresh")
+
+# 3:05pm CT = 21:05 UTC
+scheduler.add_job(scheduled_market_close, "cron",
+                  day_of_week="mon-fri", hour=21, minute=5,
+                  timezone="UTC")
+
+# Dividend refresh + Plaid sync, once daily at 7am CT
+scheduler.add_job(scheduled_morning_sync, "cron",
+                  day_of_week="mon-fri", hour=7, minute=0,
+                  timezone="America/Chicago", id="morning_sync")
 
 app.add_middleware(
     CORSMiddleware,
@@ -248,6 +280,26 @@ def manual_price_refresh(db: Session = Depends(get_db_dep)):
         for slug, pf in pf_values.items()
     }, "slugs_used": slugs}
 
+@app.get("/prices/market-close")
+def market_close(db: Session = Depends(get_db_dep)):
+    """
+    Call at 3:05pm CT Mon-Fri.
+    Computes and stores daily TWR for all portfolios.
+    """
+    from history import update_daily_twr
+    from datetime import date
+
+    today   = date.today()
+    results = {}
+    for slug in PORTFOLIOS:
+        try:
+            update_daily_twr(db, slug, today)
+            db.commit()
+            results[slug] = "ok"
+        except Exception as e:
+            results[slug] = str(e)
+
+    return {"date": str(today), "results": results}
 
 # ── Display image ─────────────────────────────────────────────────────────────
 
@@ -362,6 +414,37 @@ def import_csv(body: CsvImportRequest, db: Session = Depends(get_db_dep)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/admin/backfill-twr")
+def backfill_twr(db: Session = Depends(get_db_dep)):
+    """
+    Compute TWR for all historical dates in portfolio_history.
+    Run once after deploying.
+    """
+    from history import update_daily_twr
+    from datetime import date, timedelta
+
+    results = {}
+    for slug in PORTFOLIOS:
+        # Get all distinct dates in history
+        dates = [
+            row[0].date() for row in
+            db.query(PortfolioHistory.snapshot_at)
+            .filter(PortfolioHistory.slug == slug)
+            .order_by(PortfolioHistory.snapshot_at)
+            .distinct()
+            .all()
+        ]
+        count = 0
+        for d in dates:
+            try:
+                update_daily_twr(db, slug, d)
+                count += 1
+            except Exception:
+                pass
+        db.commit()
+        results[slug] = f"{count} days processed"
+
+    return results
 
 @app.get("/health")
 def health():
