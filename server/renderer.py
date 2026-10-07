@@ -379,16 +379,19 @@ def render_display(portfolios: dict, indices: list, history: dict,
     series_data = []
     for slug in slugs:
         pts = history.get(slug, [])
+        print(pts)
         if not pts:
             continue
         if mode == "daily":
             base = pts[0][1]   # pct_gain of anchor point = 0.0
             normalized = [(ts, pct - base) for ts, pct, _ in pts]
+            series_data.append((slug, normalized))
         else:  # monthly/ytd
-            base_dv = pts[0][2]
-            if not base_dv:
+            # dollar_value slot now holds $100-pegged TWR value
+            base = pts[0][2]
+            if not base:
                 continue
-            normalized = [(ts, (dv / base_dv) * 100) for ts, pct, dv in pts]
+            normalized = [(ts, dv) for ts, pct, dv in pts]
             series_data.append((slug, normalized))
 
     if series_data:
