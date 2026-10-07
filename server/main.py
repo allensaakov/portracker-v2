@@ -426,14 +426,13 @@ def backfill_twr(db: Session = Depends(get_db_dep)):
     results = {}
     for slug in PORTFOLIOS:
         # Get all distinct dates in history
-        dates = [
-            row[0].date() for row in
+        all_snapshots = (
             db.query(PortfolioHistory.snapshot_at)
             .filter(PortfolioHistory.slug == slug)
             .order_by(PortfolioHistory.snapshot_at)
-            .distinct()
             .all()
-        ]
+        )
+        dates = sorted(set(row[0].date() for row in all_snapshots))
         count = 0
         for d in dates:
             try:
