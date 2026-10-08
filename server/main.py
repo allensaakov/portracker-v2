@@ -459,7 +459,7 @@ def backfill_twr(db: Session = Depends(get_db_dep)):
 
         results[slug] = {
             "days_processed": count,
-            "errors": errors,
+            "errors": errors
         } 
 
     return results
@@ -495,7 +495,7 @@ def backfill_history(db: Session = Depends(get_db_dep)):
     from models import PortfolioHistory
  
     START_DATE = date(date.today().year, 1, 1)
-    END_DATE   = date.today() - timedelta(days=1)
+    END_DATE   = date.today() - timedelta(days=0)
     CASH_TYPES = {"cash", "money market"}
  
     # Get all investment accounts
