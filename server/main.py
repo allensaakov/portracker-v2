@@ -432,7 +432,9 @@ def backfill_twr(db: Session = Depends(get_db_dep)):
             .order_by(PortfolioHistory.snapshot_at)
             .all()
         )
+        print(f"Backfilling TWR for {slug}: {len(all_snapshots)} snapshots found")
         dates = sorted(set(row[0].date() for row in all_snapshots))
+        print(dates)
         count = 0
         for d in dates:
             try:
