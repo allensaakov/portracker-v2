@@ -387,11 +387,26 @@ def render_display(portfolios: dict, indices: list, history: dict,
             normalized = [(ts, pct - base) for ts, pct, _ in pts]
             series_data.append((slug, normalized))
         else:  # monthly/ytd
-            # dollar_value slot now holds $100-pegged TWR value
-            base = pts[0][2]
-            if not base:
+            
+            # Convert cumulative TWR into a $100 growth index
+            # and rebase the selected period to exactly $100.
+            
+            twr_points = [
+                (ts, pct)
+                for ts, pct, _ in pts
+                if pct is not None
+            ]
+            if not twr_points:
                 continue
-            normalized = [(ts, dv) for ts, pct, dv in pts]
+            starting_twr = twr_points[0][1]
+            normalized = [
+                (
+                    ts,
+                    100.0 * (1.0 + cumulative_twr)
+                    / (1.0 + starting_twr)
+                )
+                for ts, cumulative_twr in twr_points
+            ]
             series_data.append((slug, normalized))
 
     if series_data:
