@@ -130,7 +130,9 @@ class PortfolioHistory(Base):
     slug         = Column(String, nullable=False, index=True)   # e.g. "individual"
     pct_gain     = Column(Float)     # daily % gain at time of snapshot
     dollar_value = Column(Float)     # total portfolio value in USD
+    twr          = Column(Float)     # time-weighted return (cumulative)
     source       = Column(String, default="live")  # "live" | "backfill" | "csv_import"
+
 
 
 class LivePrice(Base):
