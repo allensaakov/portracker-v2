@@ -181,8 +181,12 @@ def update_daily_twr(db: Session, slug: str, date_to_compute: date):
         .order_by(PortfolioHistory.snapshot_at.desc())
         .first()
     )
-    if last_today:
-        last_today.twr = round(cumulative_twr, 6)
+    if not last_today:
+        return None
+    
+    last_today.twr = round(cumulative_twr, 6)
+
+    return cumulative_twr
 
 def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float, float]]]:
     ct  = pytz.timezone("America/Chicago")

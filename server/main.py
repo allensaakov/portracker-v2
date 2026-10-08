@@ -21,6 +21,7 @@ import io
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import traceback
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -432,18 +433,34 @@ def backfill_twr(db: Session = Depends(get_db_dep)):
             .order_by(PortfolioHistory.snapshot_at)
             .all()
         )
-        print(f"Backfilling TWR for {slug}: {len(all_snapshots)} snapshots found")
+        
+        print(
+            f"Backfilling TWR for {slug}: "
+            f"{len(all_snapshots)} snapshots found"
+        )
+
         dates = sorted(set(row[0].date() for row in all_snapshots))
-        print(dates)
+        
+        print(f"Dates: {dates}")
+
         count = 0
+        errors = 0
         for d in dates:
             try:
                 update_daily_twr(db, slug, d)
+                print(f"  {slug} {d}: TWR updated")
                 count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                errors += 1
+                print(f"ERROR processing {slug} {d}: {e}")
+                traceback.print_exc()
+        
         db.commit()
-        results[slug] = f"{count} days processed"
+
+        results[slug] = {
+            "days_processed": count,
+            "errors": errors,
+        } 
 
     return results
 
