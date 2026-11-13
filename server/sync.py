@@ -11,7 +11,7 @@ Account slug mapping — edit this to match your accounts:
 """
 
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -129,7 +129,7 @@ def sync_item(db: Session, plaid_item: PlaidItem) -> dict:
         .order_by(Transaction.date.desc())
         .first()
     )
-    since = last_txn.date if last_txn else None
+    since = (last_txn.date - timedelta(days=30)) if last_txn else None
     txns  = pc.get_transactions(token, start_date=since)
 
     new_txns = 0
