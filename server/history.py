@@ -8,8 +8,14 @@ from datetime import datetime, timedelta, date
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import os
-from models import PortfolioHistory, Account
+from models import PortfolioHistory, Account, Transaction
 import pytz
+
+EXTERNAL_FLOW_SUBTYPES = {"deposit", "contribution", "withdrawal"}  # add "tax" if withholding should count
+
+LAG_DAYS = 5        # balance can move up to ~5 days before the transaction posts
+SMALL_FLOW = 0.02   # flows under 2% of the portfolio just use the posted date
+LAG_MIN_FLOW = 0.03  # only withdrawals above 3% of the portfolio get the lag search
 
 PORTFOLIOS = [
     slug.strip()
@@ -66,6 +72,67 @@ def get_purchase_dates(db: Session, slug: str, start: datetime) -> set[date]:
         .all()
     )
     return {t.date for t in txns}
+
+def assign_flows_to_days(flows: list, days: list) -> dict:
+    """
+    flows: [(posted_date, amount)] from get_external_flows
+    days:  [(ts, pct, dv)] oldest first
+    Returns {trading_date: net_flow}, placing each flow on the day in the
+    lag window whose raw dollar change best matches the flow amount.
+    """
+    dates = [ts.date() for ts, _, _ in days]
+    dvs = [dv for _, _, dv in days]
+    out = {}
+    for fd, amt in flows:
+        idx = next((i for i, d in enumerate(dates) if d >= fd), None)
+        if idx is None:
+            continue  # posted after the last snapshot
+        best = idx
+        if amt < 0 and abs(amt) >= LAG_MIN_FLOW * dvs[max(idx - 1, 0)]:
+            lo = fd - timedelta(days=LAG_DAYS)
+            cands = [i for i in range(1, idx + 1) if dates[i] >= lo]
+            if cands:
+                best = min(cands, key=lambda i: abs((dvs[i] - dvs[i - 1]) - amt))
+        out[dates[best]] = out.get(dates[best], 0.0) + amt
+    return out
+
+def get_external_flows(db: Session, slug: str) -> list[tuple[date, float]]:
+    """(date, amount): + = money into the account, - = money out. Live period only."""
+    account = db.query(Account).filter_by(slug=slug).first()
+    live_start = (
+        db.query(func.min(PortfolioHistory.snapshot_at))
+        .filter(PortfolioHistory.slug == slug, PortfolioHistory.source == "live")
+        .scalar()
+    )
+    if not account or not live_start:
+        return []
+    rows = (
+        db.query(Transaction)
+        .filter(Transaction.account_id == account.id)
+        .filter(Transaction.type == "cash")
+        .filter(Transaction.subtype.in_(EXTERNAL_FLOW_SUBTYPES))
+        .filter(Transaction.date > live_start.date())
+        .all()
+    )
+    # Plaid: negative amount = cash credited to the account, so flow in = -amount
+    return [(t.date, -t.amount) for t in rows if t.amount]
+
+
+def flow_adjusted_series(db: Session, slug: str, days: list) -> list:
+    flows = assign_flows_to_days(get_external_flows(db, slug), days)
+    out, cum, offset, prev_dv = [], 1.0, 0.0, None
+    for ts, _, dv in days:
+        if prev_dv is None:
+            out.append((ts, 0.0, dv))
+        else:
+            f = flows.get(ts.date(), 0.0)
+            denom = prev_dv + f / 2
+            if denom > 0:
+                cum *= 1 + (dv - prev_dv - f) / denom
+            offset += f
+            out.append((ts, (cum - 1) * 100, dv - offset))
+        prev_dv = dv
+    return out
 
 def compute_daily_twr(db: Session, slug: str, date_to_compute: date) -> float | None:
     """
@@ -218,32 +285,11 @@ def load_history(db: Session, mode: str) -> dict[str, list[tuple[datetime, float
     # Monthly/YTD: downsample + neutralize purchase days
     if mode in ("monthly", "ytd"):
         for slug in series:
-            # Only keep end-of-day rows that have TWR computed
             by_day: dict[date, tuple] = {}
             for ts, pct, dv in series[slug]:
                 by_day[ts.date()] = (ts, pct, dv)
-
-            # Fetch TWR values for these dates
-            twr_rows = (
-                db.query(PortfolioHistory)
-                .filter(PortfolioHistory.slug == slug)
-                .filter(PortfolioHistory.snapshot_at >= cutoff_utc)
-                .filter(PortfolioHistory.twr.isnot(None))
-                .order_by(PortfolioHistory.snapshot_at)
-                .all()
-            )
-
-            if twr_rows:
-                # Use TWR for clean performance — $100 peg
-                base_twr = twr_rows[0].twr
-                series[slug] = [
-                    (row.snapshot_at, row.twr, 100 * (1 + row.twr - base_twr))
-                    for row in twr_rows
-                ]
-            else:
-                # Fallback to dollar_value until TWR accumulates
-                sorted_days = [by_day[d] for d in sorted(by_day)]
-                series[slug] = sorted_days
+            sorted_days = [by_day[d] for d in sorted(by_day)]
+            series[slug] = flow_adjusted_series(db, slug, sorted_days)
 
     # Daily: prepend yesterday's close as anchor
     if mode == "daily":

@@ -270,6 +270,9 @@ def get_portfolio_value(db: Session, slug: str) -> dict:
 
         lp = db.query(LivePrice).filter_by(ticker=ticker).first()
         if not lp or lp.price is None:
+            fv = holding.institution_value or 0.0  # broker's last value, don't drop the position
+            total_value      += fv
+            total_prev_value += fv
             continue
 
         value      = round(lp.price * holding.quantity, 2)
